@@ -23,6 +23,12 @@
 {{ end }}
 {{/* end define upstream */}}
 
+{{ define "upstream_location" }}
+	# {{ .Container.Name }}
+	server {{ .Network.IP }}:{{ .Port }};
+{{ end }}
+{{/* end define upstream_location */}}
+
 # If we receive X-Forwarded-Proto, pass it through; otherwise, pass along the
 # scheme used to connect to this server
 map $http_x_forwarded_proto $proxy_x_forwarded_proto {
@@ -152,6 +158,39 @@ server {
 	{{ end }}
 	}
 
+	{{/* Get the LOCATION_PORTS By containers w/ the same vhost, falling back to "" */}}
+	{{ $locations := trim (or (first (groupByKeys $containers "Env.LOCATION_PORTS")) "") }}
+
+	{{ if $locations }}
+		{{ range $index, $location := split $locations "," }}
+			{{ $location := trim $location }}
+			{{ $location_arr := split $location ":" }}
+			{{ $port := index $location_arr 1 }}
+			{{ $location_hash := sha1 $location }}
+			# {{ $host }} {{ $location}}
+			upstream {{ $location_hash }} {
+
+			{{ range $container := $containers }}
+				{{ $addrLen := len $container.Addresses }}
+				{{ range $knownNetwork := $CurrentContainer.Networks }}
+					{{ range $containerNetwork := $container.Networks }}
+						{{ if (and (ne $containerNetwork.Name "ingress") (or (eq $knownNetwork.Name $containerNetwork.Name) (eq $knownNetwork.Name "host"))) }}
+							## Can be connected with "{{ $containerNetwork.Name }}" network
+							{{ $address := where $container.Addresses "Port" $port | first }}
+							{{ template "upstream" (dict "Container" $container "Address" $address "Network" $containerNetwork) }}
+						{{ else }}
+							# Cannot connect to network of this container
+							server 127.0.0.1 down;
+						{{ end }}
+					{{ end }}
+				{{ end }}
+			{{ end }}
+			}
+		{{ end }}
+		{{/* End range location */}}
+	{{ end }}
+	{{/* End if locations */}}
+
 	{{ $default_host := or ($.Env.DEFAULT_HOST) "" }}
 	{{ $default_server := index (dict $host "" $default_host "default_server") $host }}
 
@@ -172,9 +211,6 @@ server {
 
 	{{/* Get the VIRTUAL_ROOT By containers w/ use fastcgi root */}}
 	{{ $vhost_root := or (first (groupByKeys $containers "Env.VIRTUAL_ROOT")) "/var/www/public" }}
-
-	{{/* Get the LOCATION_PORTS By containers w/ the same vhost, falling back to "" */}}
-	{{ $locations := trim (or (first (groupByKeys $containers "Env.LOCATION_PORTS")) "") }}
 
 	{{/* Get the first cert name defined by containers w/ the same vhost */}}
 	{{ $certName := (first (groupByKeys $containers "Env.CERT_NAME")) }}
@@ -277,9 +313,29 @@ server {
 			{{ if $locations }}
 				# Has has_locations: {{ trim $locations }}
 				{{ range $index, $location := split $locations "," }}
-				# {{ trim $location }}
+					{{ $location := trim $location }}
+					{{ $location_hash := sha1 $location }}
+					{{ $arr := split $location ":" }}
+					{{ $lpath := index $arr 0 }}
+					{{ $lproto := index $arr 2 }}
+					# {{ $location }}
+					location {{ $lpath }} {
+					{{ if eq $lproto "uwsgi" }}
+						include uwsgi_params;
+						uwsgi_pass {{ trim $proto }}://{{ $location_hash }};
+					{{ else if eq $lproto "fastcgi" }}
+						root   {{ trim $vhost_root }};
+						include fastcgi.conf;
+						fastcgi_pass {{ $location_hash }};
+					{{ else if eq $lproto "grpc" }}
+						grpc_pass {{ trim $lproto }}://{{ $location_hash }};
+					{{ else }}
+						proxy_pass {{ trim $lproto }}://{{ $location_hash }};
+					{{ end }}
+					}
 				{{ end }}
 			{{ end }}
+
 			location / {
 				{{ if eq $proto "uwsgi" }}
 					include uwsgi_params;
@@ -331,9 +387,29 @@ server {
 			{{ if $locations }}
 				# Has has_locations: {{ trim $locations }}
 				{{ range $index, $location := split $locations "," }}
-				# {{ trim $location }}
+					{{ $location := trim $location }}
+					{{ $location_hash := sha1 $location }}
+					{{ $arr := split $location ":" }}
+					{{ $lpath := index $arr 0 }}
+					{{ $lproto := index $arr 2 }}
+					# {{ $location }}
+					location {{ $lpath }} {
+					{{ if eq $lproto "uwsgi" }}
+						include uwsgi_params;
+						uwsgi_pass {{ trim $proto }}://{{ $location_hash }};
+					{{ else if eq $lproto "fastcgi" }}
+						root   {{ trim $vhost_root }};
+						include fastcgi.conf;
+						fastcgi_pass {{ $location_hash }};
+					{{ else if eq $lproto "grpc" }}
+						grpc_pass {{ trim $lproto }}://{{ $location_hash }};
+					{{ else }}
+						proxy_pass {{ trim $lproto }}://{{ $location_hash }};
+					{{ end }}
+					}
 				{{ end }}
 			{{ end }}
+
 			location / {
 				{{ if eq $proto "uwsgi" }}
 				include uwsgi_params;
